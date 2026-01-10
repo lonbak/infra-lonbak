@@ -1,0 +1,57 @@
+# GitLab Runner Helm Chart Values
+# Install: helm upgrade --install gitlab-runner gitlab/gitlab-runner -n gitlab-runner -f values.yaml
+
+# GitLab instance URL
+gitlabUrl: https://gitlab.com/
+
+# Runner registration token - MUST be set
+# Get from GitLab: Settings > CI/CD > Runners > New project runner
+# Or use: --set runnerToken="glrt-xxxx" during helm install
+runnerToken: ""
+
+# Concurrent jobs
+concurrent: 2
+
+# Check interval
+checkInterval: 30
+
+# Runner configuration
+runners:
+  # Runner name
+  name: "lonbak-k3s-runner"
+
+  # Tags for this runner
+  tags: "lonbak,k3s,docker"
+
+  # Run untagged jobs
+  runUntagged: false
+
+  # Protected branches only
+  protected: false
+
+  # Executor: kubernetes
+  executor: kubernetes
+
+  # Kubernetes executor configuration
+  config: |
+    [[runners]]
+      [runners.kubernetes]
+        namespace = "gitlab-runner"
+        image = "alpine:latest"
+        privileged = true
+        [[runners.kubernetes.volumes.pvc]]
+          mount_path = "/cache"
+          name = "runner-cache"
+        [runners.kubernetes.pod_security_context]
+          run_as_non_root = false
+        [runners.kubernetes.build_container_security_context]
+          privileged = true
+
+# Resource limits for runner manager
+resources:
+  requests:
+    cpu: "50m"
+    memory: "64Mi"
+  limits:
+    cpu: "200m"
+    memory: "256Mi"

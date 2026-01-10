@@ -1,0 +1,340 @@
+---
+# Setup K3s Single-Node Cluster
+# Run: ansible-playbook playbooks/setup-k3s.yml
+
+- name: Setup K3s Single-Node Cluster
+  hosts: k3s
+  become: true
+
+  vars:
+    k3s_version: "v1.31.4+k3s1"
+    admin_user: "admin"
+
+  tasks:
+    # =========================================================================
+    # System Setup
+    # =========================================================================
+    - name: Update apt cache and upgrade packages
+      apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install base packages
+      apt:
+        name:
+          - curl
+          - wget
+          - git
+          - vim
+          - htop
+          - jq
+          - unzip
+          - zsh
+          - tmux
+          - apt-transport-https
+          - ca-certificates
+          - gnupg
+          - lsb-release
+          - open-iscsi  # For Longhorn storage (optional)
+          - nfs-common  # For NFS storage (optional)
+        state: present
+
+    - name: Set timezone
+      timezone:
+        name: UTC
+
+    # =========================================================================
+    # K3s Installation
+    # =========================================================================
+    - name: Check if K3s is already installed
+      stat:
+        path: /usr/local/bin/k3s
+      register: k3s_installed
+
+    - name: Install K3s
+      shell: |
+        curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="{{ k3s_version }}" sh -s - server \
+          --disable traefik \
+          --write-kubeconfig-mode 644 \
+          --node-name k3s-node \
+          --cluster-cidr 10.42.0.0/16 \
+          --service-cidr 10.43.0.0/16
+      when: not k3s_installed.stat.exists
+
+    - name: Wait for K3s to be ready
+      shell: kubectl get nodes --no-headers | grep -q "Ready"
+      register: k3s_ready
+      retries: 30
+      delay: 10
+      until: k3s_ready.rc == 0
+
+    - name: Ensure K3s service is enabled
+      systemd:
+        name: k3s
+        enabled: yes
+        state: started
+
+    # =========================================================================
+    # Setup kubectl for admin user
+    # =========================================================================
+    - name: Create .kube directory for admin user
+      file:
+        path: "/home/{{ admin_user }}/.kube"
+        state: directory
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0755'
+
+    - name: Copy kubeconfig for admin user
+      copy:
+        src: /etc/rancher/k3s/k3s.yaml
+        dest: "/home/{{ admin_user }}/.kube/config"
+        remote_src: yes
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0600'
+
+    - name: Update kubeconfig server address
+      replace:
+        path: "/home/{{ admin_user }}/.kube/config"
+        regexp: 'https://127.0.0.1:6443'
+        replace: "https://{{ ansible_host }}:6443"
+
+    - name: Add kubectl alias to bashrc
+      lineinfile:
+        path: "/home/{{ admin_user }}/.bashrc"
+        line: "{{ item }}"
+        state: present
+      loop:
+        - 'alias k="kubectl"'
+        - 'alias kgp="kubectl get pods -A"'
+        - 'alias kgs="kubectl get svc -A"'
+        - 'alias kgi="kubectl get ingress -A"'
+        - 'export KUBECONFIG=/home/{{ admin_user }}/.kube/config'
+
+    # =========================================================================
+    # Install Helm
+    # =========================================================================
+    - name: Check if Helm is installed
+      stat:
+        path: /usr/local/bin/helm
+      register: helm_installed
+
+    - name: Install Helm
+      shell: |
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      when: not helm_installed.stat.exists
+
+    # =========================================================================
+    # Create namespaces for services
+    # =========================================================================
+    - name: Create namespaces
+      shell: kubectl create namespace {{ item }} --dry-run=client -o yaml | kubectl apply -f -
+      loop:
+        - traefik
+        - registry
+        - gitlab-runner
+        - uptime-kuma
+        - omada
+        - apps
+
+    # =========================================================================
+    # Firewall Configuration
+    # =========================================================================
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+
+    - name: Allow SSH
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: Allow Kubernetes API
+      ufw:
+        rule: allow
+        port: '6443'
+        proto: tcp
+
+    - name: Allow HTTP
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+
+    - name: Allow HTTPS
+      ufw:
+        rule: allow
+        port: '443'
+        proto: tcp
+
+    - name: Allow NodePort range
+      ufw:
+        rule: allow
+        port: '30000:32767'
+        proto: tcp
+
+    # K3s internal networking
+    - name: Allow Flannel VXLAN
+      ufw:
+        rule: allow
+        port: '8472'
+        proto: udp
+
+    - name: Allow Kubelet
+      ufw:
+        rule: allow
+        port: '10250'
+        proto: tcp
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    # =========================================================================
+    # System Tuning for K3s
+    # =========================================================================
+    - name: Increase file watchers for containers
+      sysctl:
+        name: fs.inotify.max_user_watches
+        value: '524288'
+        state: present
+        reload: yes
+
+    - name: Increase file descriptors
+      sysctl:
+        name: fs.file-max
+        value: '2097152'
+        state: present
+        reload: yes
+
+    # =========================================================================
+    # Verify Installation
+    # =========================================================================
+    - name: Get cluster info
+      shell: kubectl cluster-info
+      register: cluster_info
+      changed_when: false
+
+    - name: Show cluster info
+      debug:
+        msg: "{{ cluster_info.stdout_lines }}"
+
+    - name: Get nodes
+      shell: kubectl get nodes -o wide
+      register: nodes_info
+      changed_when: false
+
+    - name: Show nodes
+      debug:
+        msg: "{{ nodes_info.stdout_lines }}"
+
+    # =========================================================================
+    # Shell Configuration (Zsh + Oh My Zsh + Powerlevel10k)
+    # =========================================================================
+    - name: Check if Oh My Zsh is installed
+      stat:
+        path: "/home/{{ admin_user }}/.oh-my-zsh"
+      register: ohmyzsh_installed
+
+    - name: Install Oh My Zsh
+      become: yes
+      become_user: "{{ admin_user }}"
+      shell: |
+        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+      args:
+        creates: "/home/{{ admin_user }}/.oh-my-zsh"
+      when: not ohmyzsh_installed.stat.exists
+
+    - name: Check if Powerlevel10k is installed
+      stat:
+        path: "/home/{{ admin_user }}/.oh-my-zsh/custom/themes/powerlevel10k"
+      register: p10k_installed
+
+    - name: Install Powerlevel10k theme
+      become: yes
+      become_user: "{{ admin_user }}"
+      git:
+        repo: https://github.com/romkatv/powerlevel10k.git
+        dest: "/home/{{ admin_user }}/.oh-my-zsh/custom/themes/powerlevel10k"
+        depth: 1
+      when: not p10k_installed.stat.exists
+
+    - name: Copy zshrc configuration
+      copy:
+        src: files/zshrc
+        dest: "/home/{{ admin_user }}/.zshrc"
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0644'
+
+    - name: Copy Powerlevel10k configuration
+      copy:
+        src: files/p10k.zsh
+        dest: "/home/{{ admin_user }}/.p10k.zsh"
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0644'
+
+    - name: Set Zsh as default shell
+      user:
+        name: "{{ admin_user }}"
+        shell: /bin/zsh
+
+    # =========================================================================
+    # Claude Code CLI
+    # =========================================================================
+    - name: Check if NVM is installed
+      stat:
+        path: "/home/{{ admin_user }}/.nvm"
+      register: nvm_installed
+
+    - name: Install NVM
+      become: yes
+      become_user: "{{ admin_user }}"
+      shell: |
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+      args:
+        creates: "/home/{{ admin_user }}/.nvm"
+      when: not nvm_installed.stat.exists
+
+    - name: Install Node.js via NVM
+      become: yes
+      become_user: "{{ admin_user }}"
+      shell: |
+        source ~/.nvm/nvm.sh
+        nvm install 20
+        nvm use 20
+        nvm alias default 20
+      args:
+        executable: /bin/bash
+
+    - name: Install Claude Code CLI
+      become: yes
+      become_user: "{{ admin_user }}"
+      shell: |
+        source ~/.nvm/nvm.sh
+        npm install -g @anthropic-ai/claude-code
+      args:
+        executable: /bin/bash
+
+    - name: Ensure Claude config directory exists
+      file:
+        path: "/home/{{ admin_user }}/.claude"
+        state: directory
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0755'
+
+    - name: Copy Claude settings
+      copy:
+        src: files/claude-settings.json
+        dest: "/home/{{ admin_user }}/.claude/settings.json"
+        owner: "{{ admin_user }}"
+        group: "{{ admin_user }}"
+        mode: '0644'

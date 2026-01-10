@@ -1,0 +1,96 @@
+# =============================================================================
+# Lonbak Infrastructure Configuration
+# =============================================================================
+# Copy this file to terraform.tfvars and fill in your values
+# terraform.tfvars is gitignored to protect secrets
+# =============================================================================
+
+# =============================================================================
+# Proxmox Connection (REQUIRED)
+# =============================================================================
+
+# Proxmox API URL
+proxmox_api_url = "https://192.168.0.10:8006/api2/json"
+
+# API Token - create in Proxmox UI: Datacenter > Permissions > API Tokens
+# Token ID format: user@realm!tokenname
+proxmox_api_token_id = "root@pam!terraform"
+
+# API Token Secret - shown only once when creating the token
+proxmox_api_token_secret = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+
+# Skip TLS verification for self-signed certs (default: true)
+proxmox_tls_insecure = true
+
+# Proxmox node name - check in Proxmox UI
+proxmox_node = "anton"
+
+# =============================================================================
+# Network Configuration
+# =============================================================================
+# BOOTSTRAP PHASE: Use your existing 192.168.0.x network
+# Later, after Omada is configured, you can migrate to a different range
+# =============================================================================
+
+# Gateway IP (your current router)
+network_gateway = "192.168.0.1"
+
+# CIDR suffix (24 for typical home network 192.168.0.0/24)
+network_cidr = "24"
+
+# Proxmox network bridge
+network_bridge = "vmbr0"
+
+# Initial DNS servers (before Pi-hole is active)
+dns_servers = ["1.1.1.1", "8.8.8.8"]
+
+# =============================================================================
+# Storage Configuration
+# =============================================================================
+
+# Storage pool for VM disks
+storage_pool = "local-lvm"
+
+# Storage for ISO/templates
+iso_storage = "local"
+
+# Cloud image filename (must be downloaded to Proxmox)
+cloud_image = "debian-12-genericcloud-amd64.qcow2"
+
+# =============================================================================
+# SSH Configuration (REQUIRED)
+# =============================================================================
+
+# Your SSH public key for VM access
+ssh_public_key = "ssh-ed25519 AAAAC3... your-email@example.com"
+
+# Default username for VMs
+default_user = "admin"
+
+# =============================================================================
+# Pi-hole Configuration
+# =============================================================================
+# Use IPs in your existing range - reserve these in your router's DHCP
+# to prevent conflicts
+
+pihole_enabled = true
+pihole_ip      = "192.168.0.11"
+pihole_cores   = 1
+pihole_memory  = 512  # MB
+
+# =============================================================================
+# K3s Configuration
+# =============================================================================
+
+k3s_enabled   = true
+k3s_ip        = "192.168.0.12"
+k3s_cores     = 3
+k3s_memory    = 12288  # 12GB
+k3s_disk_size = "80G"
+
+# =============================================================================
+# Domain Configuration
+# =============================================================================
+
+# Base domain for services (used in DNS and Ingress)
+base_domain = "lonbak.local"

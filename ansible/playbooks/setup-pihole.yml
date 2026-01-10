@@ -1,0 +1,181 @@
+---
+# Setup Pi-hole DNS Server for Home Network
+# Run: ansible-playbook playbooks/setup-pihole.yml
+
+- name: Setup Pi-hole DNS Server
+  hosts: pihole
+  become: true
+
+  vars:
+    # Pi-hole configuration (bootstrap phase - using existing 192.168.0.x network)
+    pihole_ip: "192.168.0.11"
+    k3s_ip: "192.168.0.12"
+    proxmox_ip: "192.168.0.10"
+    base_domain: "lonbak.local"
+    network_cidr: "24"
+    upstream_dns_1: "1.1.1.1"
+    upstream_dns_2: "8.8.8.8"
+
+  tasks:
+    # =========================================================================
+    # System Setup
+    # =========================================================================
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install prerequisites
+      apt:
+        name:
+          - curl
+          - git
+          - vim
+        state: present
+
+    # =========================================================================
+    # Pi-hole Installation
+    # =========================================================================
+    - name: Create Pi-hole config directory
+      file:
+        path: /etc/pihole
+        state: directory
+        mode: '0755'
+
+    - name: Create Pi-hole unattended install config
+      copy:
+        dest: /etc/pihole/setupVars.conf
+        content: |
+          WEBPASSWORD={{ pihole_admin_password | default('changeme') | hash('sha256') | hash('sha256') }}
+          PIHOLE_INTERFACE=eth0
+          IPV4_ADDRESS={{ pihole_ip }}/{{ network_cidr }}
+          IPV6_ADDRESS=
+          QUERY_LOGGING=true
+          INSTALL_WEB_SERVER=true
+          INSTALL_WEB_INTERFACE=true
+          LIGHTTPD_ENABLED=true
+          CACHE_SIZE=10000
+          DNS_FQDN_REQUIRED=true
+          DNS_BOGUS_PRIV=true
+          DNSMASQ_LISTENING=all
+          PIHOLE_DNS_1={{ upstream_dns_1 }}
+          PIHOLE_DNS_2={{ upstream_dns_2 }}
+          DNSSEC=false
+          REV_SERVER=false
+          BLOCKING_ENABLED=true
+        mode: '0644'
+
+    - name: Download Pi-hole installer
+      get_url:
+        url: https://install.pi-hole.net
+        dest: /tmp/pihole-install.sh
+        mode: '0755'
+
+    - name: Check if Pi-hole is already installed
+      stat:
+        path: /usr/local/bin/pihole
+      register: pihole_installed
+
+    - name: Install Pi-hole (unattended)
+      shell: /tmp/pihole-install.sh --unattended
+      args:
+        creates: /usr/local/bin/pihole
+      when: not pihole_installed.stat.exists
+
+    # =========================================================================
+    # DNS Configuration for Home Services
+    # =========================================================================
+    - name: Configure DNS hosts in Pi-hole v6 TOML
+      lineinfile:
+        path: /etc/pihole/pihole.toml
+        regexp: '^(\s*)hosts = \[.*\]'
+        line: '  hosts = ["{{ pihole_ip }} pihole.{{ base_domain }}", "{{ k3s_ip }} k3s.{{ base_domain }}", "{{ proxmox_ip }} pve.{{ base_domain }}"]'
+        backrefs: yes
+      notify: Restart Pi-hole FTL
+
+    - name: Enable dnsmasq.d includes in Pi-hole v6
+      lineinfile:
+        path: /etc/pihole/pihole.toml
+        regexp: '^(\s*)etc_dnsmasq_d = false'
+        line: '  etc_dnsmasq_d = true'
+        backrefs: yes
+      notify: Restart Pi-hole FTL
+
+    - name: Create wildcard DNS for K3s services (Traefik Ingress)
+      copy:
+        dest: /etc/dnsmasq.d/05-home-wildcard.conf
+        content: |
+          # Wildcard DNS for K3s Traefik Ingress
+          # All *.lonbak.local subdomains route to K3s node
+          address=/{{ base_domain }}/{{ k3s_ip }}
+        mode: '0644'
+      notify: Restart Pi-hole FTL
+
+    - name: Create infrastructure DNS entries
+      copy:
+        dest: /etc/dnsmasq.d/06-infrastructure.conf
+        content: |
+          # Infrastructure hosts - short names for easy access
+          host-record=proxmox.{{ base_domain }},{{ proxmox_ip }}
+          host-record=pve.{{ base_domain }},{{ proxmox_ip }}
+          host-record=pihole.{{ base_domain }},{{ pihole_ip }}
+          host-record=k3s.{{ base_domain }},{{ k3s_ip }}
+        mode: '0644'
+      notify: Restart Pi-hole FTL
+
+    # =========================================================================
+    # Firewall Configuration
+    # =========================================================================
+    - name: Install UFW
+      apt:
+        name: ufw
+        state: present
+
+    - name: Allow SSH
+      ufw:
+        rule: allow
+        port: '22'
+        proto: tcp
+
+    - name: Allow DNS (UDP)
+      ufw:
+        rule: allow
+        port: '53'
+        proto: udp
+
+    - name: Allow DNS (TCP)
+      ufw:
+        rule: allow
+        port: '53'
+        proto: tcp
+
+    - name: Allow HTTP for Pi-hole admin
+      ufw:
+        rule: allow
+        port: '80'
+        proto: tcp
+
+    - name: Enable UFW
+      ufw:
+        state: enabled
+        policy: deny
+        direction: incoming
+
+    # =========================================================================
+    # Final Configuration
+    # =========================================================================
+    - name: Set Pi-hole admin password
+      shell: pihole setpassword '{{ pihole_admin_password | default("changeme") }}'
+      no_log: true
+      changed_when: true
+
+    - name: Update Pi-hole gravity (ad lists)
+      shell: pihole -g
+      async: 300
+      poll: 10
+
+  handlers:
+    - name: Restart Pi-hole FTL
+      systemd:
+        name: pihole-FTL
+        state: restarted

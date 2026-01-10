@@ -1,0 +1,13 @@
+# Ansible Vault Secrets Template
+# Copy to vault.yml and encrypt: ansible-vault encrypt inventory/vault.yml
+# Edit: ansible-vault edit inventory/vault.yml
+
+# Pi-hole admin password
+pihole_admin_password: "your-secure-password-here"
+
+# GitLab Runner registration token (from GitLab.com Settings > CI/CD > Runners)
+gitlab_runner_token: "glrt-xxxxxxxxxxxxxxxxxx"
+
+# Docker Registry credentials (optional, for authenticated pulls)
+registry_username: ""
+registry_password: ""

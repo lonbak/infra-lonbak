@@ -1,0 +1,176 @@
+---
+# TP-Link Omada Software Controller
+# For managing TP-Link Omada network devices (APs, switches, routers)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: omada
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: omada-data
+  namespace: omada
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: omada-logs
+  namespace: omada
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: omada-controller
+  namespace: omada
+  labels:
+    app: omada-controller
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: omada-controller
+  strategy:
+    type: Recreate  # Required for single PVC
+  template:
+    metadata:
+      labels:
+        app: omada-controller
+    spec:
+      # Use hostNetwork for device adoption (devices broadcast to find controller)
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: omada-controller
+          image: mbentley/omada-controller:5.14
+          env:
+            - name: MANAGE_HTTP_PORT
+              value: "8088"
+            - name: MANAGE_HTTPS_PORT
+              value: "8043"
+            - name: PORTAL_HTTP_PORT
+              value: "8088"
+            - name: PORTAL_HTTPS_PORT
+              value: "8843"
+            - name: SHOW_SERVER_LOGS
+              value: "true"
+            - name: SHOW_MONGODB_LOGS
+              value: "false"
+            - name: TZ
+              value: "UTC"
+          ports:
+            # Management ports
+            - containerPort: 8088
+              name: http-mgmt
+              protocol: TCP
+            - containerPort: 8043
+              name: https-mgmt
+              protocol: TCP
+            # Portal ports (for guest WiFi portal)
+            - containerPort: 8843
+              name: https-portal
+              protocol: TCP
+            # Device adoption and management
+            - containerPort: 29810
+              name: eap-discovery
+              protocol: UDP
+            - containerPort: 29811
+              name: eap-mgmt-v1
+              protocol: TCP
+            - containerPort: 29812
+              name: eap-adopt-v1
+              protocol: TCP
+            - containerPort: 29813
+              name: eap-upgrade
+              protocol: TCP
+            - containerPort: 29814
+              name: eap-mgmt-v2
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /opt/tplink/EAPController/data
+            - name: logs
+              mountPath: /opt/tplink/EAPController/logs
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 1Gi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8088
+              scheme: HTTP
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8088
+              scheme: HTTP
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            timeoutSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: omada-data
+        - name: logs
+          persistentVolumeClaim:
+            claimName: omada-logs
+---
+# Note: With hostNetwork=true, Omada is accessible directly on the K3s node IP
+# You can still create an Ingress for the web UI for a nicer URL
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: omada-controller
+  namespace: omada
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  rules:
+    - host: omada.lonbak.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: omada-controller
+                port:
+                  number: 8088
+---
+# Service for internal access (optional with hostNetwork)
+apiVersion: v1
+kind: Service
+metadata:
+  name: omada-controller
+  namespace: omada
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8088
+      targetPort: 8088
+      name: http-mgmt
+    - port: 8043
+      targetPort: 8043
+      name: https-mgmt
+  selector:
+    app: omada-controller
