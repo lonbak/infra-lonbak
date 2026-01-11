@@ -74,30 +74,33 @@
       when: uptime_kuma_manifest.stat.exists
       ignore_errors: yes
 
-    - name: Copy monitors config
+    - name: Copy monitors SQL script
       copy:
-        src: "{{ kubernetes_manifests_dir }}/uptime-kuma/monitors.json"
-        dest: /tmp/uptime-kuma-monitors.json
+        src: "{{ kubernetes_manifests_dir }}/uptime-kuma/setup-monitors.sql"
+        dest: /tmp/uptime-kuma-monitors.sql
         mode: '0644'
-      when: uptime_kuma_manifest.stat.exists
-
-    - name: Create Uptime Kuma monitors ConfigMap
-      shell: |
-        k3s kubectl create configmap uptime-kuma-monitors \
-          -n uptime-kuma \
-          --from-file=monitors.json=/tmp/uptime-kuma-monitors.json \
-          --dry-run=client -o yaml | k3s kubectl apply -f -
       when: uptime_kuma_manifest.stat.exists
 
     - name: Show Uptime Kuma setup instructions
       debug:
         msg:
           - "Uptime Kuma deployed at http://status.lonbak.local"
-          - "To import monitors:"
-          - "  1. Create admin account at http://status.lonbak.local"
-          - "  2. Go to Settings -> Backup -> Import Backup"
-          - "  3. Paste contents of kubernetes/uptime-kuma/monitors.json"
+          - "After creating admin account, run:"
+          - "  kubectl exec -n uptime-kuma deployment/uptime-kuma -- sqlite3 /app/data/kuma.db < /tmp/uptime-kuma-monitors.sql"
+          - "  kubectl rollout restart deployment/uptime-kuma -n uptime-kuma"
       when: uptime_kuma_manifest.stat.exists
+
+    - name: Setup monitors (if admin account exists)
+      shell: |
+        k3s kubectl cp /tmp/uptime-kuma-monitors.sql uptime-kuma/$(k3s kubectl get pod -n uptime-kuma -l app=uptime-kuma -o jsonpath='{.items[0].metadata.name}'):/tmp/setup-monitors.sql
+        k3s kubectl exec -n uptime-kuma deployment/uptime-kuma -- sqlite3 /app/data/kuma.db ".read /tmp/setup-monitors.sql"
+      when: uptime_kuma_manifest.stat.exists
+      ignore_errors: yes
+      register: monitors_setup
+
+    - name: Restart Uptime Kuma if monitors were added
+      shell: k3s kubectl rollout restart deployment/uptime-kuma -n uptime-kuma
+      when: uptime_kuma_manifest.stat.exists and monitors_setup is succeeded
 
     # =========================================================================
     # Deploy Registry (optional)
