@@ -1,0 +1,85 @@
+{
+  "version": "1.23.0",
+  "notificationList": [],
+  "monitorList": [
+    {
+      "name": "Pi-hole Admin",
+      "type": "http",
+      "url": "http://192.168.0.11/admin",
+      "method": "GET",
+      "interval": 60,
+      "retryInterval": 60,
+      "maxretries": 3,
+      "timeout": 30,
+      "accepted_statuscodes": ["200-299", "301-302"],
+      "tags": [{ "name": "infrastructure", "color": "#0ea5e9" }]
+    },
+    {
+      "name": "Pi-hole DNS",
+      "type": "dns",
+      "hostname": "google.com",
+      "dns_resolve_server": "192.168.0.11",
+      "dns_resolve_type": "A",
+      "interval": 60,
+      "retryInterval": 60,
+      "maxretries": 3,
+      "tags": [{ "name": "infrastructure", "color": "#0ea5e9" }]
+    },
+    {
+      "name": "Proxmox",
+      "type": "http",
+      "url": "https://192.168.0.10:8006",
+      "method": "GET",
+      "interval": 60,
+      "retryInterval": 60,
+      "maxretries": 3,
+      "timeout": 30,
+      "ignoreTls": true,
+      "accepted_statuscodes": ["200-299", "301-302"],
+      "tags": [{ "name": "infrastructure", "color": "#0ea5e9" }]
+    },
+    {
+      "name": "K3s API",
+      "type": "port",
+      "hostname": "192.168.0.12",
+      "port": 6443,
+      "interval": 60,
+      "retryInterval": 60,
+      "maxretries": 3,
+      "tags": [{ "name": "kubernetes", "color": "#22c55e" }]
+    },
+    {
+      "name": "Traefik",
+      "type": "http",
+      "url": "http://traefik.lonbak.local",
+      "method": "GET",
+      "interval": 60,
+      "retryInterval": 60,
+      "maxretries": 3,
+      "timeout": 30,
+      "accepted_statuscodes": ["200-299", "404"],
+      "tags": [{ "name": "kubernetes", "color": "#22c55e" }]
+    },
+    {
+      "name": "Omada Controller",
+      "type": "http",
+      "url": "http://192.168.0.12:8088",
+      "method": "GET",
+      "interval": 60,
+      "retryInterval": 60,
+      "maxretries": 3,
+      "timeout": 30,
+      "accepted_statuscodes": ["200-299", "301-302"],
+      "tags": [{ "name": "network", "color": "#f59e0b" }]
+    },
+    {
+      "name": "Gateway",
+      "type": "ping",
+      "hostname": "192.168.0.1",
+      "interval": 60,
+      "retryInterval": 60,
+      "maxretries": 3,
+      "tags": [{ "name": "network", "color": "#f59e0b" }]
+    }
+  ]
+}

@@ -45,7 +45,7 @@
       ignore_errors: yes
 
     # =========================================================================
-    # Deploy Uptime Kuma (optional)
+    # Deploy Uptime Kuma
     # =========================================================================
     - name: Check if Uptime Kuma manifest exists
       stat:
@@ -63,6 +63,40 @@
 
     - name: Deploy Uptime Kuma
       shell: k3s kubectl apply -f /tmp/uptime-kuma-deployment.yaml
+      when: uptime_kuma_manifest.stat.exists
+
+    - name: Wait for Uptime Kuma to be ready
+      shell: |
+        k3s kubectl wait --for=condition=ready pod \
+          -l app=uptime-kuma \
+          -n uptime-kuma \
+          --timeout=120s
+      when: uptime_kuma_manifest.stat.exists
+      ignore_errors: yes
+
+    - name: Copy monitors config
+      copy:
+        src: "{{ kubernetes_manifests_dir }}/uptime-kuma/monitors.json"
+        dest: /tmp/uptime-kuma-monitors.json
+        mode: '0644'
+      when: uptime_kuma_manifest.stat.exists
+
+    - name: Create Uptime Kuma monitors ConfigMap
+      shell: |
+        k3s kubectl create configmap uptime-kuma-monitors \
+          -n uptime-kuma \
+          --from-file=monitors.json=/tmp/uptime-kuma-monitors.json \
+          --dry-run=client -o yaml | k3s kubectl apply -f -
+      when: uptime_kuma_manifest.stat.exists
+
+    - name: Show Uptime Kuma setup instructions
+      debug:
+        msg:
+          - "Uptime Kuma deployed at http://status.lonbak.local"
+          - "To configure monitors:"
+          - "  1. Create admin account at http://status.lonbak.local"
+          - "  2. Go to Settings -> API Keys -> Add API Key"
+          - "  3. Run: ./scripts/setup-uptime-kuma.sh <api-key>"
       when: uptime_kuma_manifest.stat.exists
 
     # =========================================================================
