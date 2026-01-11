@@ -93,10 +93,10 @@
       debug:
         msg:
           - "Uptime Kuma deployed at http://status.lonbak.local"
-          - "To configure monitors:"
+          - "To import monitors:"
           - "  1. Create admin account at http://status.lonbak.local"
-          - "  2. Go to Settings -> API Keys -> Add API Key"
-          - "  3. Run: ./scripts/setup-uptime-kuma.sh <api-key>"
+          - "  2. Go to Settings -> Backup -> Import Backup"
+          - "  3. Paste contents of kubernetes/uptime-kuma/monitors.json"
       when: uptime_kuma_manifest.stat.exists
 
     # =========================================================================
