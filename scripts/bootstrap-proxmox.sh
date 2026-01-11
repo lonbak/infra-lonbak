@@ -30,7 +30,58 @@ apt dist-upgrade -y
 
 # Install useful tools
 echo "Installing tools..."
-apt install -y curl wget vim htop iotop net-tools dnsutils
+apt install -y curl wget vim htop iotop net-tools dnsutils ethtool
+
+# =============================================================================
+# Network Interface Fix (e1000e NIC hang prevention)
+# =============================================================================
+# Intel e1000e NICs can hang under heavy load. Disable TSO/GSO to prevent this.
+echo "Checking for e1000e NIC..."
+NIC_NAME=$(ip -o link show | awk -F': ' '{print $2}' | grep -E '^(enp|eno|eth)' | head -1)
+
+if [ -n "$NIC_NAME" ]; then
+  DRIVER=$(ethtool -i $NIC_NAME 2>/dev/null | grep driver | awk '{print $2}')
+
+  if [ "$DRIVER" = "e1000e" ]; then
+    echo "Found e1000e NIC: $NIC_NAME - applying TSO/GSO fix..."
+
+    # Apply fix immediately
+    ethtool -K $NIC_NAME tso off gso off 2>/dev/null || true
+
+    # Check if fix already in interfaces file
+    if ! grep -q "ethtool -K.*tso off" /etc/network/interfaces 2>/dev/null; then
+      echo "Adding permanent fix to /etc/network/interfaces..."
+      # Add post-up command to the bridge or interface
+      if grep -q "iface vmbr0" /etc/network/interfaces; then
+        sed -i "/iface vmbr0 inet/a\\        post-up ethtool -K $NIC_NAME tso off gso off" /etc/network/interfaces
+      fi
+    fi
+
+    echo "e1000e fix applied!"
+  else
+    echo "NIC driver is $DRIVER (not e1000e) - no fix needed"
+  fi
+else
+  echo "No network interface found to check"
+fi
+
+# =============================================================================
+# GRUB Configuration (kernel fallback)
+# =============================================================================
+echo "Configuring GRUB for kernel recovery..."
+if [ ! -f /etc/default/grub.d/recovery.cfg ]; then
+  mkdir -p /etc/default/grub.d
+  cat > /etc/default/grub.d/recovery.cfg << 'EOF'
+# Recovery configuration - allows selecting fallback kernel
+GRUB_TIMEOUT=10
+GRUB_DEFAULT=saved
+GRUB_SAVEDEFAULT=true
+EOF
+  update-grub
+  echo "GRUB configured with 10s timeout for kernel selection"
+else
+  echo "GRUB recovery config already exists"
+fi
 
 # Download Debian 12 LXC template
 echo "Downloading Debian 12 LXC template..."
