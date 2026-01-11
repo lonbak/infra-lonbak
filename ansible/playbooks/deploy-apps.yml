@@ -1,0 +1,117 @@
+---
+# Deploy Kubernetes Applications to K3s
+# Run: ansible-playbook -i inventory/hosts.yml playbooks/deploy-apps.yml
+
+- name: Deploy Kubernetes Applications
+  hosts: k3s
+  become: true
+
+  vars:
+    kubernetes_manifests_dir: "../../kubernetes"
+
+  tasks:
+    # =========================================================================
+    # Wait for K3s to be ready
+    # =========================================================================
+    - name: Wait for K3s to be ready
+      shell: k3s kubectl get nodes --no-headers | grep -q "Ready"
+      register: k3s_ready
+      retries: 30
+      delay: 10
+      until: k3s_ready.rc == 0
+
+    # =========================================================================
+    # Deploy Omada Controller
+    # =========================================================================
+    - name: Copy Omada manifest
+      copy:
+        src: "{{ kubernetes_manifests_dir }}/omada/deployment.yaml"
+        dest: /tmp/omada-deployment.yaml
+        mode: '0644'
+
+    - name: Deploy Omada Controller
+      shell: k3s kubectl apply -f /tmp/omada-deployment.yaml
+
+    - name: Wait for Omada to be ready
+      shell: |
+        k3s kubectl wait --for=condition=ready pod \
+          -l app=omada-controller \
+          -n omada \
+          --timeout=300s
+      register: omada_ready
+      retries: 3
+      delay: 30
+      until: omada_ready.rc == 0
+      ignore_errors: yes
+
+    # =========================================================================
+    # Deploy Uptime Kuma (optional)
+    # =========================================================================
+    - name: Check if Uptime Kuma manifest exists
+      stat:
+        path: "{{ kubernetes_manifests_dir }}/uptime-kuma/deployment.yaml"
+      delegate_to: localhost
+      become: no
+      register: uptime_kuma_manifest
+
+    - name: Copy Uptime Kuma manifest
+      copy:
+        src: "{{ kubernetes_manifests_dir }}/uptime-kuma/deployment.yaml"
+        dest: /tmp/uptime-kuma-deployment.yaml
+        mode: '0644'
+      when: uptime_kuma_manifest.stat.exists
+
+    - name: Deploy Uptime Kuma
+      shell: k3s kubectl apply -f /tmp/uptime-kuma-deployment.yaml
+      when: uptime_kuma_manifest.stat.exists
+
+    # =========================================================================
+    # Deploy Registry (optional)
+    # =========================================================================
+    - name: Check if Registry manifest exists
+      stat:
+        path: "{{ kubernetes_manifests_dir }}/registry/deployment.yaml"
+      delegate_to: localhost
+      become: no
+      register: registry_manifest
+
+    - name: Copy Registry manifest
+      copy:
+        src: "{{ kubernetes_manifests_dir }}/registry/deployment.yaml"
+        dest: /tmp/registry-deployment.yaml
+        mode: '0644'
+      when: registry_manifest.stat.exists
+
+    - name: Deploy Registry
+      shell: k3s kubectl apply -f /tmp/registry-deployment.yaml
+      when: registry_manifest.stat.exists
+
+    # =========================================================================
+    # Show Deployment Status
+    # =========================================================================
+    - name: Get all pods
+      shell: k3s kubectl get pods -A
+      register: pods_status
+      changed_when: false
+
+    - name: Show pods status
+      debug:
+        msg: "{{ pods_status.stdout_lines }}"
+
+    - name: Get all services
+      shell: k3s kubectl get svc -A
+      register: svc_status
+      changed_when: false
+
+    - name: Show services status
+      debug:
+        msg: "{{ svc_status.stdout_lines }}"
+
+    - name: Get all ingresses
+      shell: k3s kubectl get ingress -A
+      register: ingress_status
+      changed_when: false
+
+    - name: Show ingress status
+      debug:
+        msg: "{{ ingress_status.stdout_lines }}"

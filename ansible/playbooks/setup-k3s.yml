@@ -1,14 +1,15 @@
 ---
-# Setup K3s Single-Node Cluster
-# Run: ansible-playbook playbooks/setup-k3s.yml
+# Setup K3s Single-Node Cluster in LXC Container
+# Run: ansible-playbook -i inventory/hosts.yml playbooks/setup-k3s.yml
+#
+# Prerequisites (run setup-proxmox.yml first):
+# - Kernel modules loaded on Proxmox host: br_netfilter, overlay
+# - Kernel parameters set on host: vm.overcommit_memory=1, kernel.panic=10, kernel.panic_on_oops=1
+# - LXC container must be privileged with nesting enabled
 
-- name: Setup K3s Single-Node Cluster
+- name: Setup K3s Single-Node Cluster (LXC)
   hosts: k3s
   become: true
-
-  vars:
-    k3s_version: "v1.31.4+k3s1"
-    admin_user: "admin"
 
   tasks:
     # =========================================================================
@@ -30,19 +31,48 @@
           - htop
           - jq
           - unzip
-          - zsh
-          - tmux
           - apt-transport-https
           - ca-certificates
           - gnupg
           - lsb-release
-          - open-iscsi  # For Longhorn storage (optional)
-          - nfs-common  # For NFS storage (optional)
         state: present
 
     - name: Set timezone
       timezone:
         name: UTC
+
+    # =========================================================================
+    # LXC Workarounds for K3s
+    # =========================================================================
+    - name: Create /dev/kmsg symlink (required for kubelet in LXC)
+      file:
+        src: /dev/console
+        dest: /dev/kmsg
+        state: link
+        force: yes
+
+    - name: Create systemd service to persist /dev/kmsg symlink on boot
+      copy:
+        dest: /etc/systemd/system/create-kmsg.service
+        content: |
+          [Unit]
+          Description=Create /dev/kmsg symlink for K3s
+          Before=k3s.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/ln -sf /dev/console /dev/kmsg
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+        mode: '0644'
+
+    - name: Enable create-kmsg service
+      systemd:
+        name: create-kmsg
+        enabled: yes
+        daemon_reload: yes
 
     # =========================================================================
     # K3s Installation
@@ -58,60 +88,46 @@
           --disable traefik \
           --write-kubeconfig-mode 644 \
           --node-name k3s-node \
+          --kubelet-arg=protect-kernel-defaults=true \
           --cluster-cidr 10.42.0.0/16 \
           --service-cidr 10.43.0.0/16
       when: not k3s_installed.stat.exists
 
+    - name: Remove modprobe from K3s service (not needed in LXC, modules on host)
+      lineinfile:
+        path: /etc/systemd/system/k3s.service
+        regexp: '^ExecStartPre=.*modprobe'
+        state: absent
+      notify: Reload systemd
+
+    - name: Ensure K3s service is enabled and started
+      systemd:
+        name: k3s
+        enabled: yes
+        state: started
+        daemon_reload: yes
+
     - name: Wait for K3s to be ready
-      shell: kubectl get nodes --no-headers | grep -q "Ready"
+      shell: k3s kubectl get nodes --no-headers | grep -q "Ready"
       register: k3s_ready
       retries: 30
       delay: 10
       until: k3s_ready.rc == 0
 
-    - name: Ensure K3s service is enabled
-      systemd:
-        name: k3s
-        enabled: yes
-        state: started
-
     # =========================================================================
-    # Setup kubectl for admin user
+    # Setup kubectl alias for root
     # =========================================================================
-    - name: Create .kube directory for admin user
-      file:
-        path: "/home/{{ admin_user }}/.kube"
-        state: directory
-        owner: "{{ admin_user }}"
-        group: "{{ admin_user }}"
-        mode: '0755'
-
-    - name: Copy kubeconfig for admin user
-      copy:
-        src: /etc/rancher/k3s/k3s.yaml
-        dest: "/home/{{ admin_user }}/.kube/config"
-        remote_src: yes
-        owner: "{{ admin_user }}"
-        group: "{{ admin_user }}"
-        mode: '0600'
-
-    - name: Update kubeconfig server address
-      replace:
-        path: "/home/{{ admin_user }}/.kube/config"
-        regexp: 'https://127.0.0.1:6443'
-        replace: "https://{{ ansible_host }}:6443"
-
-    - name: Add kubectl alias to bashrc
+    - name: Add kubectl aliases to root bashrc
       lineinfile:
-        path: "/home/{{ admin_user }}/.bashrc"
+        path: /root/.bashrc
         line: "{{ item }}"
         state: present
       loop:
         - 'alias k="kubectl"'
-        - 'alias kgp="kubectl get pods -A"'
-        - 'alias kgs="kubectl get svc -A"'
-        - 'alias kgi="kubectl get ingress -A"'
-        - 'export KUBECONFIG=/home/{{ admin_user }}/.kube/config'
+        - 'alias kubectl="k3s kubectl"'
+        - 'alias kgp="k3s kubectl get pods -A"'
+        - 'alias kgs="k3s kubectl get svc -A"'
+        - 'alias kgi="k3s kubectl get ingress -A"'
 
     # =========================================================================
     # Install Helm
@@ -130,71 +146,40 @@
     # Create namespaces for services
     # =========================================================================
     - name: Create namespaces
-      shell: kubectl create namespace {{ item }} --dry-run=client -o yaml | kubectl apply -f -
+      shell: k3s kubectl create namespace {{ item }} --dry-run=client -o yaml | k3s kubectl apply -f -
       loop:
         - traefik
-        - registry
-        - gitlab-runner
-        - uptime-kuma
         - omada
+        - registry
+        - uptime-kuma
         - apps
 
     # =========================================================================
-    # Firewall Configuration
+    # Install Traefik via Helm
     # =========================================================================
-    - name: Install UFW
-      apt:
-        name: ufw
-        state: present
+    - name: Add Traefik Helm repository
+      shell: helm repo add traefik https://traefik.github.io/charts && helm repo update
+      changed_when: false
 
-    - name: Allow SSH
-      ufw:
-        rule: allow
-        port: '22'
-        proto: tcp
+    - name: Check if Traefik is installed
+      shell: helm list -n traefik | grep -q traefik
+      register: traefik_installed
+      failed_when: false
+      changed_when: false
 
-    - name: Allow Kubernetes API
-      ufw:
-        rule: allow
-        port: '6443'
-        proto: tcp
+    - name: Copy Traefik values file
+      copy:
+        src: ../../kubernetes/traefik/values.yaml
+        dest: /tmp/traefik-values.yaml
+        mode: '0644'
+      when: traefik_installed.rc != 0
 
-    - name: Allow HTTP
-      ufw:
-        rule: allow
-        port: '80'
-        proto: tcp
-
-    - name: Allow HTTPS
-      ufw:
-        rule: allow
-        port: '443'
-        proto: tcp
-
-    - name: Allow NodePort range
-      ufw:
-        rule: allow
-        port: '30000:32767'
-        proto: tcp
-
-    # K3s internal networking
-    - name: Allow Flannel VXLAN
-      ufw:
-        rule: allow
-        port: '8472'
-        proto: udp
-
-    - name: Allow Kubelet
-      ufw:
-        rule: allow
-        port: '10250'
-        proto: tcp
-
-    - name: Enable UFW
-      ufw:
-        state: enabled
-        policy: deny
-        direction: incoming
+    - name: Install Traefik
+      shell: |
+        helm upgrade --install traefik traefik/traefik \
+          -n traefik \
+          -f /tmp/traefik-values.yaml
+      when: traefik_installed.rc != 0
 
     # =========================================================================
     # System Tuning for K3s
@@ -217,7 +202,7 @@
     # Verify Installation
     # =========================================================================
     - name: Get cluster info
-      shell: kubectl cluster-info
+      shell: k3s kubectl cluster-info
       register: cluster_info
       changed_when: false
 
@@ -226,7 +211,7 @@
         msg: "{{ cluster_info.stdout_lines }}"
 
     - name: Get nodes
-      shell: kubectl get nodes -o wide
+      shell: k3s kubectl get nodes -o wide
       register: nodes_info
       changed_when: false
 
@@ -234,107 +219,16 @@
       debug:
         msg: "{{ nodes_info.stdout_lines }}"
 
-    # =========================================================================
-    # Shell Configuration (Zsh + Oh My Zsh + Powerlevel10k)
-    # =========================================================================
-    - name: Check if Oh My Zsh is installed
-      stat:
-        path: "/home/{{ admin_user }}/.oh-my-zsh"
-      register: ohmyzsh_installed
+    - name: Get all pods
+      shell: k3s kubectl get pods -A
+      register: pods_info
+      changed_when: false
 
-    - name: Install Oh My Zsh
-      become: yes
-      become_user: "{{ admin_user }}"
-      shell: |
-        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-      args:
-        creates: "/home/{{ admin_user }}/.oh-my-zsh"
-      when: not ohmyzsh_installed.stat.exists
+    - name: Show pods
+      debug:
+        msg: "{{ pods_info.stdout_lines }}"
 
-    - name: Check if Powerlevel10k is installed
-      stat:
-        path: "/home/{{ admin_user }}/.oh-my-zsh/custom/themes/powerlevel10k"
-      register: p10k_installed
-
-    - name: Install Powerlevel10k theme
-      become: yes
-      become_user: "{{ admin_user }}"
-      git:
-        repo: https://github.com/romkatv/powerlevel10k.git
-        dest: "/home/{{ admin_user }}/.oh-my-zsh/custom/themes/powerlevel10k"
-        depth: 1
-      when: not p10k_installed.stat.exists
-
-    - name: Copy zshrc configuration
-      copy:
-        src: files/zshrc
-        dest: "/home/{{ admin_user }}/.zshrc"
-        owner: "{{ admin_user }}"
-        group: "{{ admin_user }}"
-        mode: '0644'
-
-    - name: Copy Powerlevel10k configuration
-      copy:
-        src: files/p10k.zsh
-        dest: "/home/{{ admin_user }}/.p10k.zsh"
-        owner: "{{ admin_user }}"
-        group: "{{ admin_user }}"
-        mode: '0644'
-
-    - name: Set Zsh as default shell
-      user:
-        name: "{{ admin_user }}"
-        shell: /bin/zsh
-
-    # =========================================================================
-    # Claude Code CLI
-    # =========================================================================
-    - name: Check if NVM is installed
-      stat:
-        path: "/home/{{ admin_user }}/.nvm"
-      register: nvm_installed
-
-    - name: Install NVM
-      become: yes
-      become_user: "{{ admin_user }}"
-      shell: |
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-      args:
-        creates: "/home/{{ admin_user }}/.nvm"
-      when: not nvm_installed.stat.exists
-
-    - name: Install Node.js via NVM
-      become: yes
-      become_user: "{{ admin_user }}"
-      shell: |
-        source ~/.nvm/nvm.sh
-        nvm install 20
-        nvm use 20
-        nvm alias default 20
-      args:
-        executable: /bin/bash
-
-    - name: Install Claude Code CLI
-      become: yes
-      become_user: "{{ admin_user }}"
-      shell: |
-        source ~/.nvm/nvm.sh
-        npm install -g @anthropic-ai/claude-code
-      args:
-        executable: /bin/bash
-
-    - name: Ensure Claude config directory exists
-      file:
-        path: "/home/{{ admin_user }}/.claude"
-        state: directory
-        owner: "{{ admin_user }}"
-        group: "{{ admin_user }}"
-        mode: '0755'
-
-    - name: Copy Claude settings
-      copy:
-        src: files/claude-settings.json
-        dest: "/home/{{ admin_user }}/.claude/settings.json"
-        owner: "{{ admin_user }}"
-        group: "{{ admin_user }}"
-        mode: '0644'
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes

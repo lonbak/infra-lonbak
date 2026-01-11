@@ -1,0 +1,128 @@
+---
+# Setup Proxmox Host for K3s LXC Containers
+# Run: ansible-playbook -i inventory/hosts.yml playbooks/setup-proxmox.yml
+#
+# This playbook configures the Proxmox host with:
+# - Kernel modules required for K3s containers (br_netfilter, overlay)
+# - Kernel parameters for kubelet (vm.overcommit_memory, kernel.panic, etc.)
+# - No-subscription repository configuration
+
+- name: Setup Proxmox Host for K3s
+  hosts: proxmox
+  become: true
+
+  tasks:
+    # =========================================================================
+    # Repository Configuration
+    # =========================================================================
+    - name: Disable Proxmox Enterprise repository
+      copy:
+        dest: /etc/apt/sources.list.d/pve-no-subscription.sources
+        content: |
+          Types: deb
+          URIs: http://download.proxmox.com/debian/pve
+          Suites: {{ ansible_distribution_release }}
+          Components: pve-no-subscription
+          Signed-By: /usr/share/keyrings/proxmox-release-{{ ansible_distribution_release }}.gpg
+        mode: '0644'
+
+    - name: Disable Proxmox Enterprise pve-enterprise repo
+      file:
+        path: /etc/apt/sources.list.d/pve-enterprise.list
+        state: absent
+
+    - name: Disable Ceph Enterprise repository
+      copy:
+        dest: /etc/apt/sources.list.d/ceph-no-subscription.sources
+        content: |
+          Types: deb
+          URIs: http://download.proxmox.com/debian/ceph-squid
+          Suites: {{ ansible_distribution_release }}
+          Components: no-subscription
+          Signed-By: /usr/share/keyrings/proxmox-release-{{ ansible_distribution_release }}.gpg
+        mode: '0644'
+
+    - name: Disable Ceph Enterprise repo
+      file:
+        path: /etc/apt/sources.list.d/ceph.list
+        state: absent
+
+    # =========================================================================
+    # Kernel Modules for K3s LXC Containers
+    # =========================================================================
+    - name: Load br_netfilter module
+      modprobe:
+        name: br_netfilter
+        state: present
+
+    - name: Load overlay module
+      modprobe:
+        name: overlay
+        state: present
+
+    - name: Ensure kernel modules load on boot
+      copy:
+        dest: /etc/modules-load.d/k3s.conf
+        content: |
+          # Kernel modules required for K3s in LXC containers
+          br_netfilter
+          overlay
+        mode: '0644'
+
+    # =========================================================================
+    # Kernel Parameters for Kubelet
+    # =========================================================================
+    - name: Set kernel parameters for K3s
+      sysctl:
+        name: "{{ item.name }}"
+        value: "{{ item.value }}"
+        state: present
+        sysctl_file: /etc/sysctl.d/99-k3s.conf
+        reload: yes
+      loop:
+        - { name: 'vm.overcommit_memory', value: '1' }
+        - { name: 'kernel.panic', value: '10' }
+        - { name: 'kernel.panic_on_oops', value: '1' }
+        - { name: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+        - { name: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+        - { name: 'net.ipv4.ip_forward', value: '1' }
+
+    # =========================================================================
+    # GRUB Recovery Configuration
+    # =========================================================================
+    - name: Configure GRUB for recovery mode access
+      copy:
+        dest: /etc/default/grub.d/recovery.cfg
+        content: |
+          # Enable recovery menu entries
+          GRUB_DISABLE_RECOVERY="false"
+          # Keep previous kernel entries
+          GRUB_SAVEDEFAULT=true
+        mode: '0644'
+      notify: Update GRUB
+
+    # =========================================================================
+    # Verify Configuration
+    # =========================================================================
+    - name: Verify kernel modules are loaded
+      shell: lsmod | grep -E 'br_netfilter|overlay'
+      register: modules_check
+      changed_when: false
+
+    - name: Show loaded modules
+      debug:
+        msg: "{{ modules_check.stdout_lines }}"
+
+    - name: Verify kernel parameters
+      shell: |
+        sysctl vm.overcommit_memory kernel.panic kernel.panic_on_oops
+      register: sysctl_check
+      changed_when: false
+
+    - name: Show kernel parameters
+      debug:
+        msg: "{{ sysctl_check.stdout_lines }}"
+
+  handlers:
+    - name: Update GRUB
+      shell: update-grub

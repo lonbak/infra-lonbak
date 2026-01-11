@@ -1,0 +1,43 @@
+---
+# Main Ansible Playbook for Lonbak Infrastructure
+# This playbook orchestrates the full infrastructure deployment
+#
+# Usage:
+#   Full deployment:     ansible-playbook -i inventory/hosts.yml site.yml
+#   Proxmox only:        ansible-playbook -i inventory/hosts.yml site.yml --tags proxmox
+#   Pi-hole only:        ansible-playbook -i inventory/hosts.yml site.yml --tags pihole
+#   K3s only:            ansible-playbook -i inventory/hosts.yml site.yml --tags k3s
+#   Apps only:           ansible-playbook -i inventory/hosts.yml site.yml --tags apps
+#
+# Prerequisites:
+#   1. Terraform has provisioned the LXC containers (terraform apply)
+#   2. SSH keys are configured for root access to containers
+#   3. Ansible is installed with required collections
+
+# =============================================================================
+# Step 1: Configure Proxmox Host
+# =============================================================================
+- name: Setup Proxmox Host
+  import_playbook: playbooks/setup-proxmox.yml
+  tags: [proxmox, infrastructure]
+
+# =============================================================================
+# Step 2: Setup Pi-hole DNS
+# =============================================================================
+- name: Setup Pi-hole DNS Server
+  import_playbook: playbooks/setup-pihole.yml
+  tags: [pihole, dns, infrastructure]
+
+# =============================================================================
+# Step 3: Setup K3s Cluster
+# =============================================================================
+- name: Setup K3s Single-Node Cluster
+  import_playbook: playbooks/setup-k3s.yml
+  tags: [k3s, kubernetes, infrastructure]
+
+# =============================================================================
+# Step 4: Deploy Applications
+# =============================================================================
+- name: Deploy Kubernetes Applications
+  import_playbook: playbooks/deploy-apps.yml
+  tags: [apps, kubernetes]

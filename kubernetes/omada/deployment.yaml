@@ -105,27 +105,29 @@ spec:
               mountPath: /opt/tplink/EAPController/logs
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: 250m
+              memory: 768Mi
             limits:
-              cpu: 1000m
-              memory: 1Gi
+              cpu: 2000m
+              memory: 2Gi
           livenessProbe:
             httpGet:
               path: /
               port: 8088
               scheme: HTTP
-            initialDelaySeconds: 120
-            periodSeconds: 30
-            timeoutSeconds: 10
+            initialDelaySeconds: 300
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 5
           readinessProbe:
             httpGet:
               path: /
               port: 8088
               scheme: HTTP
-            initialDelaySeconds: 60
-            periodSeconds: 10
-            timeoutSeconds: 5
+            initialDelaySeconds: 180
+            periodSeconds: 30
+            timeoutSeconds: 15
+            failureThreshold: 10
       volumes:
         - name: data
           persistentVolumeClaim:
