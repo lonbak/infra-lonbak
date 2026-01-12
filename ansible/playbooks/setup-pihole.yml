@@ -48,7 +48,7 @@
           CACHE_SIZE=10000
           DNS_FQDN_REQUIRED=true
           DNS_BOGUS_PRIV=true
-          DNSMASQ_LISTENING=local
+          DNSMASQ_LISTENING=all
           PIHOLE_DNS_1={{ upstream_dns_1 }}
           PIHOLE_DNS_2={{ upstream_dns_2 }}
           DNSSEC=false
@@ -86,7 +86,14 @@
         path: /etc/pihole/pihole.toml
         regexp: '^(\s*)etc_dnsmasq_d = false'
         line: '  etc_dnsmasq_d = true'
-      notify: Reload Pi-hole DNS
+      notify: Restart Pi-hole FTL
+
+    - name: Set listening mode to all in Pi-hole v6
+      lineinfile:
+        path: /etc/pihole/pihole.toml
+        regexp: '^(\s*)listeningMode = '
+        line: '  listeningMode = "all"'
+      notify: Restart Pi-hole FTL
 
     # =========================================================================
     # Local DNS via dnsmasq host-record
