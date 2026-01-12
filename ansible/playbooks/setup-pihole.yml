@@ -89,7 +89,7 @@
       notify: Reload Pi-hole DNS
 
     # =========================================================================
-    # Wildcard DNS for K3s Traefik Ingress
+    # Local DNS via dnsmasq host-record
     # =========================================================================
     - name: Ensure dnsmasq.d directory exists
       file:
@@ -97,15 +97,18 @@
         state: directory
         mode: '0755'
 
-    - name: Create wildcard DNS for K3s services
-      copy:
-        dest: /etc/dnsmasq.d/05-home-wildcard.conf
-        content: |
-          # Wildcard DNS for K3s Traefik Ingress
-          # All *.{{ base_domain }} subdomains route to K3s node
-          address=/{{ base_domain }}/{{ k3s_ip }}
+    - name: Create local DNS config for dnsmasq
+      template:
+        dest: /etc/dnsmasq.d/05-local-dns.conf
+        src: /dev/stdin
         mode: '0644'
-      notify: Reload Pi-hole DNS
+      args:
+        stdin: |
+          # Local DNS for {{ base_domain }} services
+          {% for entry in local_dns_entries %}
+          host-record={{ entry.name }},{{ entry.ip }}
+          {% endfor %}
+      notify: Restart Pi-hole FTL
 
     # =========================================================================
     # Set Admin Password
@@ -150,3 +153,8 @@
   handlers:
     - name: Reload Pi-hole DNS
       shell: pihole reloaddns
+
+    - name: Restart Pi-hole FTL
+      systemd:
+        name: pihole-FTL
+        state: restarted
